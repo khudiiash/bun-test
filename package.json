@@ -1,0 +1,15 @@
+{
+  "name": "bun-physics-demo",
+  "module": "main.ts",
+  "type": "module",
+  "scripts": {
+    "start": "bun run main.ts"
+  },
+  "dependencies": {
+    "protobufjs": "^7.2.5"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "@types/node": "latest"
+  }
+}
