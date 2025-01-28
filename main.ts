@@ -9,10 +9,10 @@ const root = await protobuf.load(join(import.meta.dir, "proto", "game.proto"));
 const GameState = root.lookupType("GameState");
 
 // Initialize 10 players with random positions
-const players: Player[] = Array.from({ length: 2 }, (_, i) => ({
+const players: Player[] = Array.from({ length: 100 }, (_, i) => ({
   id: i,
-  x: Math.random() * 10,
-  y: Math.random() * 10,
+  x: (Math.random() - 0.5) * 10,
+  y: (Math.random() - 0.5) * 10,
   velocity: { x: 0, y: 0 }
 }));
 
@@ -30,7 +30,7 @@ const physicsProcess = Bun.spawn(["bun", "run", "physics.ts"], {
     try {
       const message = GameState.decode(buffer);
       const state = GameState.toObject(message);
-      console.log(state);
+      console.log("Received state update. Player[0] pos:", state.players[0].x, state.players[0].y);
       buffer = Buffer.alloc(0);
     } catch (err) {
       if (!(err instanceof protobuf.util.ProtocolError)) {
