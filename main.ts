@@ -1,58 +1,60 @@
-import * as protobuf from "protobufjs";
-import { type Player} from "./types.ts";
-import { join } from "path";
+import { fork } from 'child_process';
+import { join } from 'path';
+import { fileURLToPath } from 'url';
+import protobuf from 'protobufjs';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 console.log("Starting main process");
 
-// Load protobuf schema
-const root = await protobuf.load(join(import.meta.dir, "proto", "game.proto"));
-const GameState = root.lookupType("GameState");
+try {
+  const root = await protobuf.load(join(__dirname, "proto", "game.proto"));
+  const GameState = root.lookupType("GameState");
 
-// Initialize 10 players with random positions
-const players: Player[] = Array.from({ length: 2 }, (_, i) => ({
-  id: i,
-  x: Math.random() * 10,
-  y: Math.random() * 10,
-  velocity: { x: 0, y: 0 }
-}));
+  const players = Array.from({ length: 100 }, (_, i) => ({
+    id: i,
+    x: (Math.random() - 0.5) * 10,
+    y: (Math.random() - 0.5) * 10,
+    velocity: { x: 0, y: 0 }
+  }));
 
-const physicsProcess = Bun.spawn(["bun", "run", "physics.ts"], {
-  stdin: "pipe",
-  stdout: "pipe",
-  stderr: "pipe",
-});
+  const physicsProcess = fork('dist/physics.js', [], {
+    stdio: ['pipe', 'pipe', 'pipe', 'ipc']
+  });
 
-// Handle stdout
-(async () => {
-  let buffer = Buffer.alloc(0);
-  for await (const chunk of physicsProcess.stdout) {
-    buffer = Buffer.concat([buffer, chunk]);
+  console.log("Physics process spawned with PID:", physicsProcess.pid);
+
+  physicsProcess.stdout!.on('data', (chunk: Buffer) => {
     try {
-      const message = GameState.decode(buffer);
+      const message = GameState.decode(chunk);
       const state = GameState.toObject(message);
-      console.log(state);
-      buffer = Buffer.alloc(0);
+      console.log("Received state update. Player[0] pos:", state.players[0].x, state.players[0].y);
     } catch (err) {
       if (!(err instanceof protobuf.util.ProtocolError)) {
         console.error("Error parsing physics output:", err);
-        buffer = Buffer.alloc(0);
       }
     }
-  }
-})();
+  });
 
-// Handle stderr
-(async () => {
-  const decoder = new TextDecoder();
-  for await (const chunk of physicsProcess.stderr) {
-    console.error("Physics stderr:", decoder.decode(chunk));
-  }
-})();
+  physicsProcess.stderr!.on('data', (data: Buffer) => {
+    console.error('Physics stderr:', data.toString());
+  });
 
-// Send state updates
-const initialState = { players };
-setInterval(() => {
-  const message = GameState.create(initialState);
-  const buffer = GameState.encode(message).finish();
-  physicsProcess.stdin.write(buffer);
-}, 1000/60);
+  physicsProcess.on('error', (err) => {
+    console.error('Physics process error:', err);
+  });
+
+  physicsProcess.on('exit', (code) => {
+    console.log('Physics process exited with code:', code);
+  });
+
+  const initialState = { players };
+  setInterval(() => {
+    const message = GameState.create(initialState);
+    const buffer = GameState.encode(message).finish();
+    physicsProcess.stdin!.write(buffer);
+  }, 1000/60);
+
+} catch (err) {
+  console.error("Error in main process:", err);
+}

@@ -30,6 +30,8 @@ Thumbs.db
 *.swn
 .vs/
 
+package-lock.json
+
 # Testing
 coverage/
 

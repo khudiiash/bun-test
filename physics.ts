@@ -1,17 +1,19 @@
-import * as protobuf from "protobufjs";
-import { type Player} from "./types.ts";
-import { join } from "path";
+import protobuf from 'protobufjs';
+import { join } from 'path';
+import { fileURLToPath } from 'url';
+import { type Player } from './types.js';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 console.log("Physics process started");
 
-// Load protobuf schema
-const root = await protobuf.load(join(import.meta.dir, "proto", "game.proto"));
-const GameState = root.lookupType("GameState");
+try {
+  const root = await protobuf.load(join(__dirname, "proto", "game.proto"));
+  const GameState = root.lookupType("GameState");
 
-let buffer = Buffer.alloc(0);
+  let buffer = Buffer.alloc(0);
 
-(async () => {
-  for await (const chunk of process.stdin) {
+  process.stdin.on('data', (chunk: Buffer) => {
     buffer = Buffer.concat([buffer, chunk]);
     
     try {
@@ -19,7 +21,6 @@ let buffer = Buffer.alloc(0);
       const state = GameState.toObject(message);
       buffer = Buffer.alloc(0);
       
-      // Update physics (just random changes for demo)
       const updatedPlayers = state.players.map((player: Player) => ({
         ...player,
         x: player.x + (Math.random() - 0.5) * 10,
@@ -30,7 +31,6 @@ let buffer = Buffer.alloc(0);
         }
       }));
       
-      // Encode and send back
       const updatedState = { players: updatedPlayers };
       const updatedMessage = GameState.create(updatedState);
       const updatedBuffer = GameState.encode(updatedMessage).finish();
@@ -42,5 +42,7 @@ let buffer = Buffer.alloc(0);
         buffer = Buffer.alloc(0);
       }
     }
-  }
-})();
+  });
+} catch (err) {
+  console.error("Error in physics process:", err);
+}
