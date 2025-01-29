@@ -1,60 +1,144 @@
-import { fork } from 'child_process';
-import { join } from 'path';
-import { fileURLToPath } from 'url';
 import protobuf from 'protobufjs';
+import { WebSocketServer, WebSocket } from 'ws';
+import { spawn } from 'child_process';
+import { performance } from 'perf_hooks';
+import { join } from 'path';
+import { Player, GameState as GameStateType } from './types.js';
 
-const __dirname = fileURLToPath(new URL('.', import.meta.url));
+console.log("Main process starting");
 
-console.log("Starting main process");
+// Start WebSocket server
+const wss = new WebSocketServer({ 
+  port: 8081,
+  perMessageDeflate: false,
+  clientTracking: true
+});
 
-try {
-  const root = await protobuf.load(join(__dirname, "proto", "game.proto"));
-  const GameState = root.lookupType("GameState");
 
-  const players = Array.from({ length: 100 }, (_, i) => ({
-    id: i,
-    x: (Math.random() - 0.5) * 10,
-    y: (Math.random() - 0.5) * 10,
+// Load protobuf schema
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const root = await protobuf.load(join(__dirname, "proto", "game.proto"));
+const GameState = root.lookupType("GameState");
+
+function startServer(): void {
+  // Initialize 100 players in a grid pattern
+  const PLAYER_COUNT = 100;
+  const GRID_SIZE = Math.ceil(Math.sqrt(PLAYER_COUNT));
+  const SPACING = 50;
+
+  const players: Player[] = Array.from({ length: PLAYER_COUNT }, (_, index) => ({
+    id: index,
+    x: (index % GRID_SIZE) * SPACING - (GRID_SIZE * SPACING / 2),
+    y: Math.floor(index / GRID_SIZE) * SPACING - (GRID_SIZE * SPACING / 2),
     velocity: { x: 0, y: 0 }
   }));
 
-  const physicsProcess = fork('dist/physics.js', [], {
-    stdio: ['pipe', 'pipe', 'pipe', 'ipc']
+  console.log("WebSocket server started on port 8081");
+
+  // Spawn physics process
+  const physicsProcess = spawn('node', ['physics.js'], {
+    cwd: __dirname,
+    stdio: ['inherit', 'inherit', 'inherit']
   });
 
-  console.log("Physics process spawned with PID:", physicsProcess.pid);
+  if (!physicsProcess.pid) {
+    console.error("Failed to start physics process");
+    process.exit(1);
+  }
 
-  physicsProcess.stdout!.on('data', (chunk: Buffer) => {
-    try {
-      const message = GameState.decode(chunk);
-      const state = GameState.toObject(message);
-      console.log("Received state update. Player[0] pos:", state.players[0].x, state.players[0].y);
-    } catch (err) {
-      if (!(err instanceof protobuf.util.ProtocolError)) {
-        console.error("Error parsing physics output:", err);
-      }
+  console.log("Physics process started with PID:", physicsProcess.pid);
+
+  // Performance monitoring
+  let lastTime = performance.now();
+  let frameCount = 0;
+  let lastFPSUpdate = performance.now();
+
+  let updateInterval: NodeJS.Timeout | null = null;
+
+  // Handle WebSocket connections
+  wss.on("connection", (ws: WebSocket) => {
+    console.log("Physics process connected");
+
+    // Clear any existing interval
+    if (updateInterval) {
+      clearInterval(updateInterval);
     }
+
+    // Send state updates
+    const sendUpdate = (): void => {
+      try {
+        const message = GameState.create({ players });
+        const buffer = GameState.encode(message).finish();
+        
+        // Calculate update time
+        const now = performance.now();
+        const delta = now - lastTime;
+        lastTime = now;
+        
+        // Update FPS counter every second
+        frameCount++;
+        if (now - lastFPSUpdate > 1000) {
+          console.log(`FPS: ${Math.round(frameCount * 1000 / (now - lastFPSUpdate))}`);
+          frameCount = 0;
+          lastFPSUpdate = now;
+        }
+        
+        if (ws.readyState === ws.OPEN) {
+          ws.send(buffer);
+        }
+      } catch (err) {
+        console.error("Error sending state:", err);
+      }
+    };
+
+    // Handle messages from physics process
+    ws.on("message", (data: Buffer) => {
+      try {
+        const message = GameState.decode(data);
+        const state = GameState.toObject(message) as GameStateType;
+        // Update our players array with the new state
+        players.splice(0, players.length, ...state.players);
+      } catch (err) {
+        console.error("Decode error:", err);
+      }
+    });
+
+    // Send updates at 60 FPS
+    updateInterval = setInterval(sendUpdate, 1000/60);
+
+    ws.on("close", () => {
+      console.log("Physics process disconnected");
+      if (updateInterval) {
+        clearInterval(updateInterval);
+        updateInterval = null;
+      }
+    });
+
+    ws.on("error", (error: Error) => {
+      console.error("WebSocket error:", error);
+    });
   });
 
-  physicsProcess.stderr!.on('data', (data: Buffer) => {
-    console.error('Physics stderr:', data.toString());
+  // Clean up on exit
+  process.on("SIGINT", () => {
+    console.log("Main process exiting");
+    wss.close();
+    physicsProcess.kill();
+    process.exit(0);
   });
 
-  physicsProcess.on('error', (err) => {
-    console.error('Physics process error:', err);
+  process.on("exit", () => {
+    if (updateInterval) {
+      clearInterval(updateInterval);
+    }
+    wss.close();
+    physicsProcess.kill();
   });
-
-  physicsProcess.on('exit', (code) => {
-    console.log('Physics process exited with code:', code);
-  });
-
-  const initialState = { players };
-  setInterval(() => {
-    const message = GameState.create(initialState);
-    const buffer = GameState.encode(message).finish();
-    physicsProcess.stdin!.write(buffer);
-  }, 1000/60);
-
-} catch (err) {
-  console.error("Error in main process:", err);
 }
+
+startServer();
